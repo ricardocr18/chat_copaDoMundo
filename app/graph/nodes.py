@@ -1,50 +1,41 @@
 """
-Nós do Grafo LangGraph — Fase 3.
+Nós do Grafo LangGraph — Fase 4.
 
-O que mudou em relação à Fase 2:
-- Adicionado rag_node: busca documentos relevantes antes de responder
-- process_node agora recebe contexto do RAG e o injeta no prompt
-- O prompt foi enriquecido para usar o contexto encontrado
+Novidades em relação à Fase 3:
+- router_node importado do router_agent
+- api_node: consulta APIs externas de esportes
+- direct_node: responde perguntas simples sem RAG
+- off_topic_node: trata perguntas fora do escopo
+- process_node: agora recebe também api_data
 
-Fluxo da Fase 3:
-  input_node → rag_node → process_node → output_node
-                  ↑
-          NOVO: busca no ChromaDB
+Fluxo:
+  input → router → [rag | api | direct | off_topic] → process → output
 """
 
+import json
 import time
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from app.graph.state import GraphState
 
 
-# ── System Prompt Base ─────────────────────────────────────────────────────────
 WORLD_CUP_SYSTEM_PROMPT = """Você é um especialista em Copa do Mundo FIFA com conhecimento \
 profundo sobre toda a história do torneio desde 1930 até os dias atuais.
 
 Suas responsabilidades:
 - Responder perguntas sobre história, estatísticas e curiosidades da Copa do Mundo
 - Fornecer informações precisas sobre campeões, artilheiros, recordes e jogadores históricos
-- Contextualizar eventos históricos de forma didática e envolvente
 - Manter um tom entusiasmado mas preciso, como um comentarista esportivo experiente
 
-Diretrizes importantes:
+Diretrizes:
 - Responda SEMPRE em português brasileiro
 - Se não souber algo com certeza, diga claramente
-- Foque exclusivamente em Copa do Mundo — para outros assuntos de futebol,
-  redirecione gentilmente ao tema principal
-- Para perguntas completamente fora do futebol, explique educadamente
-  que seu escopo é a Copa do Mundo FIFA
-- Quando houver contexto de documentos fornecido, PRIORIZE essas informações
-
-Formato das respostas:
-- Respostas diretas e objetivas para perguntas simples
-- Respostas mais detalhadas para perguntas históricas ou comparativas
-- Use números e estatísticas quando relevante
-- Máximo de 3 parágrafos para não sobrecarregar o usuário"""
+- Foque exclusivamente em Copa do Mundo
+- Quando houver contexto de documentos ou API, PRIORIZE essas informações
+- Máximo de 3 parágrafos"""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# NÓ 1: Input — IDÊNTICO à Fase 2
+# NÓ 1: Input — sem alterações
 # ─────────────────────────────────────────────────────────────────────────────
 
 def input_node(state: GraphState) -> dict:
@@ -62,195 +53,266 @@ def input_node(state: GraphState) -> dict:
         "final_response": None,
         "intent": None,
         "retrieved_context": None,
+        "api_data": None,
     }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# NÓ 2: RAG — NOVO na Fase 3
+# NÓ 2: Router — importado do router_agent
+# ─────────────────────────────────────────────────────────────────────────────
+
+def router_node(state: GraphState) -> dict:
+    """Delega para o router_agent."""
+    from app.agents.router_agent import router_node as _router
+    return _router(state)
+
+
+def routing_function(state: GraphState) -> str:
+    """Função de roteamento para edges condicionais."""
+    from app.agents.router_agent import routing_function as _route
+    return _route(state)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NÓ 3: RAG — sem alterações da Fase 3
 # ─────────────────────────────────────────────────────────────────────────────
 
 def rag_node(state: GraphState) -> dict:
-    """
-    Nó de RAG — busca documentos relevantes no ChromaDB.
-
-    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    COMO FUNCIONA:
-    1. Pega a pergunta do usuário (user_input)
-    2. Converte em embedding via Titan (chamada AWS)
-    3. ChromaDB compara com todos os chunks armazenados
-    4. Retorna os 3 chunks mais semanticamente similares
-    5. Salva esses chunks em state["retrieved_context"]
-    6. O process_node vai usar esse contexto no prompt
-    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-    Args:
-        state: Estado com user_input preenchido.
-
-    Returns:
-        Dicionário com retrieved_context preenchido.
-    """
+    """Busca documentos relevantes no ChromaDB."""
     from app.tools.vector_store import search_similar_documents
 
     user_input = state["user_input"]
     print(f"🔍 [rag_node] Buscando documentos relevantes...")
 
     try:
-        # Busca os 3 chunks mais relevantes para a pergunta
         contexts = search_similar_documents(query=user_input, k=3)
 
         if contexts:
-            print(f"   ✅ {len(contexts)} trechos encontrados no vector store")
-            for i, ctx in enumerate(contexts, 1):
-                preview = ctx[:80].replace('\n', ' ')
-                print(f"   {i}. {preview}...")
+            print(f"   ✅ {len(contexts)} trechos encontrados")
         else:
             print(f"   ⚠️  Nenhum trecho relevante encontrado")
 
-        # Atualiza metadados
         metadata = state.get("metadata", {}) or {}
         metadata["node_path"] = metadata.get("node_path", []) + ["rag_node"]
         metadata["rag_chunks_found"] = len(contexts)
 
-        return {
-            "retrieved_context": contexts if contexts else [],
-            "metadata": metadata,
-        }
-
-    except FileNotFoundError as e:
-        # Vector store não foi criado ainda
-        print(f"   ⚠️  Vector store não encontrado: {e}")
-        print(f"   ℹ️  Respondendo sem RAG (só com conhecimento do modelo)")
-
-        metadata = state.get("metadata", {}) or {}
-        metadata["node_path"] = metadata.get("node_path", []) + ["rag_node"]
-        metadata["rag_chunks_found"] = 0
-
-        return {
-            "retrieved_context": [],
-            "metadata": metadata,
-        }
+        return {"retrieved_context": contexts or [], "metadata": metadata}
 
     except Exception as e:
-        print(f"   ❌ Erro no RAG: {str(e)[:100]}")
-
+        print(f"   ⚠️  Erro no RAG: {str(e)[:80]}")
         metadata = state.get("metadata", {}) or {}
         metadata["node_path"] = metadata.get("node_path", []) + ["rag_node"]
+        return {"retrieved_context": [], "metadata": metadata}
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NÓ 4: API — NOVO na Fase 4
+# ─────────────────────────────────────────────────────────────────────────────
+
+def api_node(state: GraphState) -> dict:
+    """
+    Nó de API — consulta fontes externas de dados esportivos.
+
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    Decisão interna: qual endpoint chamar?
+    Analisa palavras-chave no user_input para decidir:
+    - "classificação", "ranking" → standings
+    - "notícia", "recente"      → news
+    - nome de seleção           → team info
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    """
+    from app.tools.http_client import (
+        fetch_world_cup_standings,
+        fetch_world_cup_news,
+    )
+
+    user_input = state["user_input"].lower()
+    print(f"🌐 [api_node] Consultando API externa...")
+
+    try:
+        # Decide qual endpoint chamar baseado na pergunta
+        if any(w in user_input for w in ["notícia", "noticia", "recente", "novo", "atualidade"]):
+            print(f"   📰 Buscando notícias recentes...")
+            api_data = fetch_world_cup_news()
+
+        else:
+            # Default: classificação/standings
+            print(f"   📊 Buscando classificação/dados gerais...")
+            api_data = fetch_world_cup_standings()
+
+        source = api_data.get("source", "unknown")
+        print(f"   ✅ Dados recebidos (fonte: {source})")
+
+        metadata = state.get("metadata", {}) or {}
+        metadata["node_path"] = metadata.get("node_path", []) + ["api_node"]
+        metadata["api_source"] = source
+
+        return {"api_data": api_data, "metadata": metadata}
+
+    except Exception as e:
+        print(f"   ❌ Erro na API: {str(e)[:80]}")
+        metadata = state.get("metadata", {}) or {}
+        metadata["node_path"] = metadata.get("node_path", []) + ["api_node"]
         return {
-            "retrieved_context": [],
+            "api_data": {"source": "error", "error": str(e)},
             "metadata": metadata,
         }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# NÓ 3: Process — MODIFICADO para usar contexto do RAG
+# NÓ 5: Direct — NOVO na Fase 4
+# ─────────────────────────────────────────────────────────────────────────────
+
+def direct_node(state: GraphState) -> dict:
+    """
+    Nó de resposta direta — para saudações e perguntas simples.
+
+    Não chama RAG nem API — responde diretamente com o LLM.
+    Mais rápido que o process_node completo pois não
+    precisa montar contexto de documentos.
+    """
+    print(f"💬 [direct_node] Resposta direta (sem RAG/API)...")
+
+    metadata = state.get("metadata", {}) or {}
+    metadata["node_path"] = metadata.get("node_path", []) + ["direct_node"]
+
+    return {"metadata": metadata}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NÓ 6: Off-Topic — NOVO na Fase 4
+# ─────────────────────────────────────────────────────────────────────────────
+
+def off_topic_node(state: GraphState) -> dict:
+    """
+    Nó off-topic — trata perguntas fora do escopo.
+
+    Não chama o LLM — retorna resposta padrão diretamente.
+    Economiza tokens e tempo para perguntas irrelevantes.
+    """
+    print(f"🚫 [off_topic_node] Pergunta fora do escopo")
+
+    off_topic_response = (
+        "Desculpe, sou especializado exclusivamente em Copa do Mundo FIFA! 🏆\n\n"
+        "Posso te ajudar com:\n"
+        "• História e campeões das Copas\n"
+        "• Artilheiros e estatísticas\n"
+        "• Curiosidades e recordes\n"
+        "• Informações sobre jogadores históricos\n\n"
+        "Tem alguma pergunta sobre a Copa do Mundo?"
+    )
+
+    metadata = state.get("metadata", {}) or {}
+    metadata["node_path"] = metadata.get("node_path", []) + ["off_topic_node"]
+
+    return {
+        "final_response": off_topic_response,
+        "metadata": metadata,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NÓ 7: Process — MODIFICADO para tratar RAG + API + Direct
 # ─────────────────────────────────────────────────────────────────────────────
 
 def process_node(state: GraphState) -> dict:
     """
-    Nó de processamento — chama o LLM com contexto do RAG.
+    Nó de processamento — chama o LLM com o contexto apropriado.
 
-    Diferença da Fase 2:
-    Se o RAG encontrou documentos relevantes, injeta
-    esses trechos no prompt antes da pergunta.
-    O modelo passa a responder COM BASE nos documentos.
-
-    Args:
-        state: Estado com messages, user_input e retrieved_context.
-
-    Returns:
-        Dicionário com final_response preenchido.
+    Detecta qual rota foi tomada e monta o prompt adequado:
+    - Rota RAG:    injeta chunks dos documentos
+    - Rota API:    injeta dados da API externa
+    - Rota Direct: usa só o system prompt base
     """
     from app.config.aws_config import get_llm
 
+    # Se já tem resposta (off_topic_node preencheu), pula o LLM
+    if state.get("final_response"):
+        print(f"⚙️  [process_node] Resposta já gerada, pulando LLM")
+        metadata = state.get("metadata", {}) or {}
+        metadata["node_path"] = metadata.get("node_path", []) + ["process_node"]
+        return {"metadata": metadata}
+
     print(f"⚙️  [process_node] Chamando LLM...")
+    intent = state.get("intent", "rag")
 
     try:
-        # ── Verifica se temos contexto do RAG ────────────────────────
+        # ── Monta contexto baseado na rota ────────────────────────────
         retrieved_context = state.get("retrieved_context") or []
+        api_data = state.get("api_data")
 
-        if retrieved_context:
-            # Monta o contexto formatado para injetar no prompt
+        if retrieved_context and intent == "rag":
+            # Rota RAG: injeta documentos
             context_text = "\n\n---\n\n".join(retrieved_context)
+            system_content = f"""{WORLD_CUP_SYSTEM_PROMPT}
 
-            # Prompt enriquecido com o contexto dos documentos
-            # Este é o coração do RAG — o modelo "lê" os documentos
-            # antes de responder
-            rag_prompt = f"""{WORLD_CUP_SYSTEM_PROMPT}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 CONTEXTO DOS DOCUMENTOS (use como fonte principal):
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 {context_text}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Responda baseado principalmente neste contexto."""
+            print(f"   📚 Modo RAG ({len(retrieved_context)} trechos)")
 
-Com base PRINCIPALMENTE nas informações acima, responda
-a pergunta do usuário. Se as informações não forem
-suficientes, complemente com seu conhecimento."""
+        elif api_data and intent == "api":
+            # Rota API: injeta dados externos
+            api_text = json.dumps(api_data, ensure_ascii=False, indent=2)
+            system_content = f"""{WORLD_CUP_SYSTEM_PROMPT}
 
-            system_content = rag_prompt
-            print(f"   📚 Usando RAG ({len(retrieved_context)} trechos injetados no prompt)")
+DADOS DA API EXTERNA (informações atualizadas):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{api_text}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Use estes dados para responder. Se forem dados de exemplo,
+mencione isso na resposta."""
+            print(f"   🌐 Modo API (fonte: {api_data.get('source', '?')})")
+
         else:
-            # Sem contexto — usa apenas o conhecimento do modelo
+            # Rota Direct: sem contexto externo
             system_content = WORLD_CUP_SYSTEM_PROMPT
-            print(f"   🧠 Usando apenas conhecimento do modelo (sem RAG)")
+            print(f"   💬 Modo Direct (só conhecimento do modelo)")
 
-        # ── Monta e envia as mensagens ────────────────────────────────
+        # ── Envia ao LLM ──────────────────────────────────────────────
         messages_to_send = [
             SystemMessage(content=system_content),
             *state["messages"],
         ]
 
         llm = get_llm()
-        print(f"   🌐 Enviando {len(messages_to_send)} mensagens ao modelo...")
-
+        print(f"   🌐 Enviando {len(messages_to_send)} mensagens...")
         response = llm.invoke(messages_to_send)
         answer = response.content
-        print(f"   ✅ Resposta recebida ({len(answer)} caracteres)")
+        print(f"   ✅ Resposta recebida ({len(answer)} chars)")
 
         metadata = state.get("metadata", {}) or {}
         metadata["node_path"] = metadata.get("node_path", []) + ["process_node"]
-        metadata["used_rag"] = len(retrieved_context) > 0
+        metadata["used_rag"] = bool(retrieved_context and intent == "rag")
+        metadata["used_api"] = bool(api_data and intent == "api")
 
-        return {
-            "final_response": answer,
-            "metadata": metadata,
-        }
+        return {"final_response": answer, "metadata": metadata}
 
     except Exception as e:
         error_msg = str(e)
-        print(f"   ❌ Erro: {error_msg[:100]}")
-
+        print(f"   ❌ Erro: {error_msg[:80]}")
         metadata = state.get("metadata", {}) or {}
         metadata["node_path"] = metadata.get("node_path", []) + ["process_node"]
-
-        return {
-            "error": error_msg,
-            "final_response": None,
-            "metadata": metadata,
-        }
+        return {"error": error_msg, "final_response": None, "metadata": metadata}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# NÓ 4: Output — MODIFICADO para mostrar se usou RAG
+# NÓ 8: Output — atualizado para mostrar a rota usada
 # ─────────────────────────────────────────────────────────────────────────────
 
 def output_node(state: GraphState) -> dict:
-    """Finaliza a resposta e calcula métricas."""
+    """Finaliza e formata a resposta."""
     error = state.get("error")
 
     if error:
         print(f"⚠️  [output_node] Erro detectado, usando fallback")
-        if "ThrottlingException" in error:
-            final_response = "Estou recebendo muitas perguntas. Aguarde e tente novamente."
-        elif "credentials" in error.lower() or "auth" in error.lower():
-            final_response = "Problema de autenticação AWS. Verifique o .env."
-        else:
-            final_response = "Desculpe, tive um problema. Por favor, tente novamente."
+        final_response = "Desculpe, tive um problema. Por favor, tente novamente."
     else:
         final_response = state.get("final_response") or "Não consegui gerar uma resposta."
 
-    print(f"📤 [output_node] Finalizando resposta")
+    print(f"📤 [output_node] Finalizando")
 
     metadata = state.get("metadata", {}) or {}
     start_time = metadata.get("start_time", time.time())
@@ -258,13 +320,18 @@ def output_node(state: GraphState) -> dict:
     metadata["node_path"] = metadata.get("node_path", []) + ["output_node"]
     metadata["latency_ms"] = latency_ms
 
-    # Indica se a resposta foi fundamentada em documentos
-    used_rag = metadata.get("used_rag", False)
-    rag_chunks = metadata.get("rag_chunks_found", 0)
-    rag_indicator = f"📚 RAG ({rag_chunks} trechos)" if used_rag else "🧠 Modelo"
-    metadata["source_indicator"] = rag_indicator
+    # Indicador de fonte baseado na rota
+    intent = metadata.get("intent", state.get("intent", "?"))
+    source_map = {
+        "rag":       f"📚 RAG ({metadata.get('rag_chunks_found', 0)} trechos)",
+        "api":       f"🌐 API ({metadata.get('api_source', 'externa')})",
+        "direct":    "💬 Direto",
+        "off_topic": "🚫 Off-topic",
+    }
+    source_indicator = source_map.get(intent, "🧠 Modelo")
+    metadata["source_indicator"] = source_indicator
 
-    print(f"⏱️  [output_node] Latência: {latency_ms}ms | Fonte: {rag_indicator}")
+    print(f"⏱️  Latência: {latency_ms}ms | Rota: {source_indicator}")
 
     return {
         "messages": [AIMessage(content=final_response)],
@@ -273,16 +340,7 @@ def output_node(state: GraphState) -> dict:
     }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# NÓ DE ERRO — IDÊNTICO às fases anteriores
-# ─────────────────────────────────────────────────────────────────────────────
-
 def error_node(state: GraphState) -> dict:
     """Tratamento centralizado de erros."""
-    error = state.get("error", "Erro desconhecido")
-    print(f"❌ [error_node] Tratando: {error}")
     fallback = "Desculpe, encontrei um problema. Por favor, tente novamente."
-    return {
-        "final_response": fallback,
-        "messages": [AIMessage(content=fallback)],
-    }
+    return {"final_response": fallback, "messages": [AIMessage(content=fallback)]}

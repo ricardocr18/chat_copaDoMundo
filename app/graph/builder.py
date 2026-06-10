@@ -1,61 +1,104 @@
 """
-Construtor do Grafo LangGraph — Fase 3.
+Construtor do Grafo — Fase 4.
 
-O que mudou:
-- Adicionado rag_node entre input_node e process_node
-- O fluxo agora é: START → input → rag → process → output → END
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEITO: EDGES CONDICIONAIS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Fase 3 usava edges SIMPLES:
+  A → B → C → D  (sempre o mesmo caminho)
 
-Por que o rag_node fica ANTES do process_node?
-  O RAG precisa buscar o contexto ANTES do LLM responder.
-  O process_node lê o retrieved_context do estado
-  e o injeta no prompt — por isso a ordem importa.
+Fase 4 usa edges CONDICIONAIS:
+  A → router → ? (depende do intent)
+               ├→ B (se intent == "rag")
+               ├→ C (se intent == "api")
+               ├→ D (se intent == "direct")
+               └→ E (se intent == "off_topic")
+
+add_conditional_edges(origem, função, mapa):
+  - origem: nó de onde sai a aresta
+  - função: retorna uma string baseada no estado
+  - mapa: {string: próximo_nó}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
 from langgraph.graph import END, START, StateGraph
 from app.graph.nodes import (
-    error_node,
     input_node,
-    output_node,
-    process_node,
+    router_node,
+    routing_function,
     rag_node,
+    api_node,
+    direct_node,
+    off_topic_node,
+    process_node,
+    output_node,
+    error_node,
 )
 from app.graph.state import GraphState
 
 
 def build_graph() -> StateGraph:
     """
-    Constrói e compila o grafo com o nó RAG.
+    Constrói o grafo com roteamento condicional.
 
-    Fluxo da Fase 3:
-      START → input_node → rag_node → process_node → output_node → END
-                               ↑
-                    Busca documentos no ChromaDB
-                    antes do LLM responder
-
-    Returns:
-        Grafo compilado.
+    Fluxo completo:
+      START
+        ↓
+      input_node
+        ↓
+      router_node (LLM decide a rota)
+        ↓
+        ├──→ rag_node      → process_node → output_node → END
+        ├──→ api_node      → process_node → output_node → END
+        ├──→ direct_node   → process_node → output_node → END
+        └──→ off_topic_node → process_node → output_node → END
     """
     graph = StateGraph(GraphState)
 
-    # ── Registra os nós ───────────────────────────────────────────────
-    graph.add_node("input_node",   input_node)
-    graph.add_node("rag_node",     rag_node)      # NOVO na Fase 3
-    graph.add_node("process_node", process_node)
-    graph.add_node("output_node",  output_node)
-    graph.add_node("error_node",   error_node)
+    # ── Registra todos os nós ─────────────────────────────────────────
+    graph.add_node("input_node",    input_node)
+    graph.add_node("router_node",   router_node)
+    graph.add_node("rag_node",      rag_node)
+    graph.add_node("api_node",      api_node)
+    graph.add_node("direct_node",   direct_node)
+    graph.add_node("off_topic_node",off_topic_node)
+    graph.add_node("process_node",  process_node)
+    graph.add_node("output_node",   output_node)
+    graph.add_node("error_node",    error_node)
 
-    # ── Define o fluxo ────────────────────────────────────────────────
-    graph.add_edge(START,          "input_node")
-    graph.add_edge("input_node",   "rag_node")    # NOVO: vai para o RAG primeiro
-    graph.add_edge("rag_node",     "process_node")
-    graph.add_edge("process_node", "output_node")
-    graph.add_edge("output_node",  END)
-    graph.add_edge("error_node",   END)
+    # ── Edges simples ─────────────────────────────────────────────────
+    graph.add_edge(START,           "input_node")
+    graph.add_edge("input_node",    "router_node")
+
+    # ── Edge CONDICIONAL — o coração da Fase 4 ────────────────────────
+    # Após o router_node, chama routing_function(state)
+    # O retorno decide qual nó executar a seguir
+    graph.add_conditional_edges(
+        "router_node",      # nó de origem
+        routing_function,   # função que retorna a chave
+        {                   # mapa: chave → próximo nó
+            "rag":       "rag_node",
+            "api":       "api_node",
+            "direct":    "direct_node",
+            "off_topic": "off_topic_node",
+        }
+    )
+
+    # ── Todos os caminhos convergem para process_node ─────────────────
+    graph.add_edge("rag_node",       "process_node")
+    graph.add_edge("api_node",       "process_node")
+    graph.add_edge("direct_node",    "process_node")
+    graph.add_edge("off_topic_node", "process_node")
+
+    # ── Final do fluxo ────────────────────────────────────────────────
+    graph.add_edge("process_node",  "output_node")
+    graph.add_edge("output_node",   END)
+    graph.add_edge("error_node",    END)
 
     compiled = graph.compile()
 
     print("✅ Grafo compilado com sucesso!")
-    print("   Fluxo: START → input_node → rag_node → process_node → output_node → END")
+    print("   Fluxo: START → input → router → [rag|api|direct|off_topic] → process → output → END")
 
     return compiled
 
