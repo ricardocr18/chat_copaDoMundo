@@ -89,7 +89,7 @@ def create_chat_model() -> ChatBedrock:
         model_id=settings.bedrock_model_id,
         model_kwargs={
             "temperature": 0.7,    # Equilíbrio criatividade/precisão
-            "max_gen_len": 150,    # Máximo de tokens na resposta
+            "max_gen_len": 250,    # Máximo de tokens na resposta
         },
     )
 

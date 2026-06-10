@@ -1,22 +1,17 @@
-"""
-Ponto de entrada da aplicação — Interface CLI.
-Fase 2: Atualizado para refletir o uso do LLM real.
-"""
+"""Ponto de entrada — Fase 3: RAG ativo."""
 
-import sys
 from app.graph.builder import get_graph
 from app.graph.state import GraphState
 
 
 def run_chat() -> None:
-    """Loop principal do chatbot em modo CLI."""
     print("=" * 60)
     print("🏆  BEM-VINDO AO CHATBOT DA COPA DO MUNDO  🏆")
     print("=" * 60)
-    print("Fase 2 — Claude via Amazon Bedrock (LLM real)")
-    print("Digite 'sair' ou 'exit' para encerrar")
-    print("Digite 'estado' para ver o estado atual do grafo")
-    print("Digite 'limpar' para reiniciar o histórico")
+    print("Fase 3 — RAG ativo (Llama 3.3 + Titan Embeddings + ChromaDB)")
+    print("Digite 'sair' para encerrar")
+    print("Digite 'estado' para ver o histórico")
+    print("Digite 'limpar' para reiniciar a conversa")
     print("-" * 60)
 
     graph = get_graph()
@@ -37,23 +32,19 @@ def run_chat() -> None:
 
             if not user_input:
                 continue
-
             if user_input.lower() in ("sair", "exit", "quit"):
                 print("\n👋 Até logo! Que venha a próxima Copa! 🏆")
                 break
-
             if user_input.lower() == "estado":
                 _print_state(current_state)
                 continue
-
             if user_input.lower() == "limpar":
                 current_state["messages"] = []
-                print("🗑️  Histórico limpo! Nova conversa iniciada.")
+                print("🗑️  Histórico limpo!")
                 continue
 
             current_state["user_input"] = user_input
-
-            print("\n🔄 Consultando Claude...\n")
+            print("\n🔄 Consultando...\n")
             current_state = graph.invoke(current_state)
 
             response = current_state.get("final_response", "Sem resposta")
@@ -62,27 +53,26 @@ def run_chat() -> None:
             metadata = current_state.get("metadata", {})
             if metadata:
                 latency = metadata.get("latency_ms", "?")
-                model = metadata.get("model_id", "?")
+                source = metadata.get("source_indicator", "?")
                 path = " → ".join(metadata.get("node_path", []))
-                print(f"\n   📊 Latência: {latency}ms | Modelo: {model}")
+                print(f"\n   📊 Latência: {latency}ms | Fonte: {source}")
                 print(f"   🗺️  Caminho: {path}")
 
         except KeyboardInterrupt:
-            print("\n\n👋 Interrompido. Até logo!")
+            print("\n\n👋 Até logo!")
             break
         except Exception as e:
-            print(f"\n❌ Erro inesperado: {e}")
+            print(f"\n❌ Erro: {e}")
 
 
 def _print_state(state: GraphState) -> None:
-    """Exibe o estado atual do grafo."""
     print("\n" + "=" * 40)
     print("📋 ESTADO ATUAL DO GRAFO")
     print("=" * 40)
-    print(f"• Mensagens no histórico: {len(state.get('messages', []))}")
+    print(f"• Mensagens: {len(state.get('messages', []))}")
     print(f"• Última entrada: {state.get('user_input', 'N/A')}")
-    print(f"• Erro: {state.get('error', 'Nenhum')}")
-
+    ctx = state.get("retrieved_context")
+    print(f"• Chunks RAG: {len(ctx) if ctx else 0}")
     messages = state.get("messages", [])
     if messages:
         print("\n📜 Histórico:")
