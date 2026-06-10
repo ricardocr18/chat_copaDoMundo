@@ -1,67 +1,75 @@
 """
-Nós do Grafo LangGraph.
+Nós do Grafo LangGraph — Fase 2.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CONCEITO: O QUE É UM "NÓ"?
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Um nó é simplesmente uma FUNÇÃO PYTHON que:
-  1. Recebe o estado atual (a "mochila")
-  2. Faz algum processamento
-  3. Retorna um DICIONÁRIO com os campos que quer atualizar
+O que mudou em relação à Fase 1:
+- process_node agora chama o Claude via Bedrock
+- Adicionado system prompt temático sobre Copa do Mundo
+- Histórico de conversa enviado ao modelo (memória real)
+- Tratamento de erros de API (timeout, throttling)
 
-O LangGraph pega esse dicionário e mescla com o estado atual.
-Você não precisa retornar o estado completo — só o que mudou.
+O que NÃO mudou:
+- input_node: idêntico à Fase 1
+- output_node: idêntico à Fase 1
+- error_node: idêntico à Fase 1
+- Assinatura das funções: (state) -> dict
+- Contrato com o GraphState: mesmo de sempre
 
-Exemplo:
-  def meu_no(state: GraphState) -> dict:
-      return {"final_response": "Olá!"}  # Só atualiza este campo
-
-Nesta Fase 1, os nós são MOCKS — simulam comportamento sem LLM.
-Nas fases seguintes, vamos substituir os mocks por implementações reais.
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Isso demonstra na prática a separação de responsabilidades:
+mudamos o comportamento interno sem afetar a interface.
 """
 
 import time
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from app.graph.state import GraphState
 
 
+# ── System Prompt ──────────────────────────────────────────────────────────────
+# O system prompt é a "personalidade" e as "regras" do assistente.
+# É enviado ao modelo em TODA conversa, antes das mensagens do usuário.
+# Define escopo, tom, e comportamento esperado.
+WORLD_CUP_SYSTEM_PROMPT = """Você é um especialista em Copa do Mundo FIFA com conhecimento \
+profundo sobre toda a história do torneio desde 1930 até os dias atuais.
+
+Suas responsabilidades:
+- Responder perguntas sobre história, estatísticas e curiosidades da Copa do Mundo
+- Fornecer informações precisas sobre campeões, artilheiros, recordes e jogadores históricos
+- Contextualizar eventos históricos de forma didática e envolvente
+- Manter um tom entusiasmado mas preciso, como um comentarista esportivo experiente
+
+Diretrizes importantes:
+- Responda SEMPRE em português brasileiro
+- Se não souber algo com certeza, diga claramente
+- Foque exclusivamente em Copa do Mundo — para outros assuntos de futebol,
+  redirecione gentilmente ao tema principal
+- Para perguntas completamente fora do futebol, explique educadamente
+  que seu escopo é a Copa do Mundo FIFA
+
+Formato das respostas:
+- Respostas diretas e objetivas para perguntas simples
+- Respostas mais detalhadas para perguntas históricas ou comparativas
+- Use números e estatísticas quando relevante
+- Máximo de 3 parágrafos para não sobrecarregar o usuário"""
+
+
 # ─────────────────────────────────────────────────────────────────────────────
-# NÓ 1: Recepção da entrada do usuário
+# NÓ 1: Recepção — IDÊNTICO à Fase 1
 # ─────────────────────────────────────────────────────────────────────────────
 
 def input_node(state: GraphState) -> dict:
     """
-    Primeiro nó do grafo — recebe e prepara a entrada do usuário.
-
-    Responsabilidades:
-    - Registrar o timestamp de início (para medir latência)
-    - Formatar a mensagem do usuário para o histórico
-    - Inicializar campos que serão preenchidos adiante
-
-    Args:
-        state: Estado atual do grafo.
-
-    Returns:
-        Dicionário com os campos atualizados.
+    Primeiro nó — recebe e prepara a entrada do usuário.
+    Sem alterações em relação à Fase 1.
     """
     user_input = state["user_input"]
-
     print(f"\n📥 [input_node] Recebendo pergunta: '{user_input}'")
 
     return {
-        # Adiciona a mensagem humana ao histórico
-        # add_messages vai ACUMULAR (não substituir) graças ao Annotated
         "messages": [HumanMessage(content=user_input)],
-
-        # Inicializa metadados com timestamp de início
         "metadata": {
             "start_time": time.time(),
-            "node_path": ["input_node"],  # Rastreia por quais nós passou
+            "node_path": ["input_node"],
         },
-
-        # Limpa campos de execuções anteriores
         "error": None,
         "final_response": None,
         "intent": None,
@@ -70,87 +78,145 @@ def input_node(state: GraphState) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# NÓ 2: Processamento (MOCK — será substituído pelo LLM na Fase 2)
+# NÓ 2: Processamento — SUBSTITUÍDO pelo Claude via Bedrock
 # ─────────────────────────────────────────────────────────────────────────────
 
 def process_node(state: GraphState) -> dict:
     """
-    Nó de processamento — gera uma resposta para a pergunta.
+    Nó de processamento — chama o Claude via Amazon Bedrock.
 
-    ⚠️  FASE 1: Este nó é um MOCK que simula respostas sem LLM.
-        Na Fase 2, será substituído por uma chamada real ao Bedrock.
+    FASE 2: Substituímos o dicionário de keywords por uma
+    chamada real ao LLM. O modelo recebe:
+    1. System prompt com as regras e personalidade
+    2. Histórico completo da conversa (memória)
+    3. A pergunta atual do usuário
+
+    Tratamento de erros:
+    - Se a chamada falhar, registra o erro no estado
+    - O output_node detecta o erro e usa mensagem de fallback
+    - Nunca deixa o usuário sem resposta
 
     Args:
-        state: Estado atual com user_input preenchido.
+        state: Estado com messages (histórico) e user_input.
 
     Returns:
-        Dicionário atualizando final_response e metadata.
+        Dicionário com final_response ou error preenchido.
     """
-    user_input = state["user_input"].lower()
+    # Importação local para evitar erro se as credenciais
+    # não estiverem configuradas durante os testes
+    from app.config.aws_config import get_llm
 
-    print(f"⚙️  [process_node] Processando: '{user_input}'")
+    print(f"⚙️  [process_node] Chamando Claude via Bedrock...")
 
-    # ── Lógica de mock: respostas simples baseadas em palavras-chave ──────
-    mock_responses = {
-        "campeão": "🏆 O Brasil é o maior campeão mundial com 5 títulos (1958, 1962, 1970, 1994, 2002).",
-        "brasil": "🇧🇷 O Brasil é o único país a disputar todas as Copas do Mundo, com 5 títulos.",
-        "artilheiro": "⚽ Miroslav Klose (Alemanha) é o maior artilheiro da história com 16 gols.",
-        "gol": "⚽ O maior artilheiro histórico é Miroslav Klose (Alemanha) com 16 gols.",
-        "alemanha": "🇩🇪 A Alemanha conquistou 4 títulos mundiais: 1954, 1974, 1990 e 2014.",
-        "copa": "🌍 A Copa do Mundo FIFA é o maior torneio de futebol do mundo, realizado a cada 4 anos.",
-        "1970": "🏆 A Copa de 1970 foi disputada no México. O Brasil sagrou-se tricampeão, com Pelé sendo o grande destaque.",
-        "pelé": "⭐ Pelé é considerado o maior jogador de todos os tempos, sendo tricampeão mundial (1958, 1962, 1970).",
-        "próxima": "📅 A próxima Copa do Mundo será em 2026, sediada nos Estados Unidos, México e Canadá.",
-        "2026": "🌎 A Copa do Mundo de 2026 será realizada em conjunto pelos EUA, México e Canadá.",
-    }
+    try:
+        # ── Monta as mensagens para enviar ao modelo ──────────────────────
+        #
+        # CONCEITO: Como o Claude "enxerga" a conversa
+        #
+        # O modelo recebe uma lista de mensagens nesta ordem:
+        # [SystemMessage, HumanMessage, AIMessage, HumanMessage, ...]
+        #
+        # SystemMessage  → as regras/personalidade (nosso WORLD_CUP_SYSTEM_PROMPT)
+        # HumanMessage   → mensagens do usuário
+        # AIMessage      → respostas anteriores do modelo
+        #
+        # Enviar o histórico completo é o que dá "memória" ao chatbot.
+        # Sem isso, cada pergunta seria tratada de forma isolada.
 
-    # Busca pela primeira palavra-chave encontrada na pergunta
-    response = None
-    for keyword, answer in mock_responses.items():
-        if keyword in user_input:
-            response = answer
-            break
+        messages_to_send = [
+            SystemMessage(content=WORLD_CUP_SYSTEM_PROMPT),
+            # Histórico da conversa (acumulado pelo add_messages no state)
+            *state["messages"],
+        ]
 
-    # Fallback se nenhuma palavra-chave for encontrada
-    if response is None:
-        response = (
-            "🤔 Essa é uma boa pergunta sobre a Copa do Mundo! "
-            "Por enquanto estou em modo de demonstração (Fase 1). "
-            "Em breve terei acesso ao banco de conhecimento completo."
-        )
+        # ── Chama o modelo ────────────────────────────────────────────────
+        llm = get_llm()
+        print(f"   🌐 Enviando {len(messages_to_send)} mensagens ao modelo...")
 
-    print(f"💬 [process_node] Resposta gerada: '{response[:60]}...'")
+        response = llm.invoke(messages_to_send)
 
-    # Atualiza o caminho percorrido nos metadados
-    metadata = state.get("metadata", {}) or {}
-    metadata["node_path"] = metadata.get("node_path", []) + ["process_node"]
+        # response é um AIMessage com o campo .content
+        answer = response.content
+        print(f"   ✅ Resposta recebida ({len(answer)} caracteres)")
 
-    return {
-        "final_response": response,
-        "metadata": metadata,
-    }
+        # Atualiza o caminho nos metadados
+        metadata = state.get("metadata", {}) or {}
+        metadata["node_path"] = metadata.get("node_path", []) + ["process_node"]
+        metadata["model_id"] = settings_info()
+
+        return {
+            "final_response": answer,
+            "metadata": metadata,
+        }
+
+    except Exception as e:
+        # ── Tratamento de erros ───────────────────────────────────────────
+        #
+        # Erros comuns do Bedrock:
+        # - ThrottlingException: muitas chamadas por segundo
+        # - ModelNotReadyException: modelo ainda inicializando
+        # - ValidationException: parâmetros inválidos
+        # - ConnectionError: problema de rede/credenciais
+        #
+        # Em vez de deixar o programa crashar, registramos o erro
+        # no estado para que o output_node possa tratá-lo.
+
+        error_msg = str(e)
+        print(f"   ❌ Erro ao chamar Bedrock: {error_msg[:100]}")
+
+        metadata = state.get("metadata", {}) or {}
+        metadata["node_path"] = metadata.get("node_path", []) + ["process_node"]
+
+        return {
+            "error": error_msg,
+            "final_response": None,
+            "metadata": metadata,
+        }
+
+
+def settings_info() -> str:
+    """Retorna o model_id configurado para logging."""
+    try:
+        from app.config.settings import settings
+        return settings.bedrock_model_id
+    except Exception:
+        return "unknown"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# NÓ 3: Saída — formata e finaliza a resposta
+# NÓ 3: Saída — LEVEMENTE MODIFICADO para tratar erros
 # ─────────────────────────────────────────────────────────────────────────────
 
 def output_node(state: GraphState) -> dict:
     """
-    Último nó do grafo — finaliza e formata a resposta.
+    Último nó — finaliza a resposta.
 
-    Responsabilidades:
-    - Adicionar a resposta ao histórico de mensagens
-    - Calcular a latência total
-    - Preparar o estado final para retorno ao usuário
-
-    Args:
-        state: Estado com final_response preenchida.
-
-    Returns:
-        Dicionário com a mensagem AI adicionada ao histórico.
+    Modificação em relação à Fase 1:
+    Verifica se houve erro no process_node e usa
+    mensagem de fallback adequada.
     """
-    final_response = state.get("final_response") or "Não consegui gerar uma resposta."
+    # Verifica se houve erro
+    error = state.get("error")
+    if error:
+        print(f"⚠️  [output_node] Erro detectado, usando fallback")
+        # Identifica o tipo de erro para mensagem mais útil
+        if "ThrottlingException" in error:
+            final_response = (
+                "Estou recebendo muitas perguntas no momento. "
+                "Aguarde alguns segundos e tente novamente."
+            )
+        elif "credentials" in error.lower() or "auth" in error.lower():
+            final_response = (
+                "Problema de autenticação com a AWS. "
+                "Verifique suas credenciais no arquivo .env."
+            )
+        else:
+            final_response = (
+                "Desculpe, tive um problema ao processar sua pergunta. "
+                "Por favor, tente novamente."
+            )
+    else:
+        final_response = state.get("final_response") or "Não consegui gerar uma resposta."
 
     print(f"📤 [output_node] Finalizando resposta")
 
@@ -158,44 +224,30 @@ def output_node(state: GraphState) -> dict:
     metadata = state.get("metadata", {}) or {}
     start_time = metadata.get("start_time", time.time())
     latency_ms = round((time.time() - start_time) * 1000, 2)
-
     metadata["node_path"] = metadata.get("node_path", []) + ["output_node"]
     metadata["latency_ms"] = latency_ms
 
     print(f"⏱️  [output_node] Latência total: {latency_ms}ms")
 
     return {
-        # Adiciona a resposta da IA ao histórico
         "messages": [AIMessage(content=final_response)],
+        "final_response": final_response,
         "metadata": metadata,
     }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# NÓ DE ERRO — tratamento centralizado de falhas
+# NÓ DE ERRO — IDÊNTICO à Fase 1
 # ─────────────────────────────────────────────────────────────────────────────
 
 def error_node(state: GraphState) -> dict:
-    """
-    Nó de tratamento de erros — chamado quando algo falha.
-
-    No LangGraph, podemos redirecionar o fluxo para este nó
-    usando edges condicionais (implementadas na Fase 4).
-    Por ora, ele é chamado manualmente quando um nó lança exceção.
-
-    Args:
-        state: Estado com o campo `error` preenchido.
-
-    Returns:
-        Dicionário com mensagem de fallback.
-    """
+    """Tratamento centralizado de erros — sem alterações."""
     error = state.get("error", "Erro desconhecido")
-
     print(f"❌ [error_node] Tratando erro: {error}")
 
     fallback_response = (
         "Desculpe, encontrei um problema ao processar sua pergunta. "
-        "Por favor, tente novamente ou reformule sua pergunta."
+        "Por favor, tente novamente."
     )
 
     return {

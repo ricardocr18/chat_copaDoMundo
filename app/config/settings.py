@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     aws_secret_access_key: str | None = Field(default=None, description="AWS Secret Key")
 
     bedrock_model_id: str = Field(
-        default="anthropic.claude-3-sonnet-20240229-v1:0",
+        default="meta.llama3-3-70b-instruct-v1:0",
         description="ID do modelo no Bedrock",
     )
     bedrock_embeddings_model_id: str = Field(
