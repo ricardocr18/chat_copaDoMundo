@@ -1,33 +1,23 @@
 """
-Nós do Grafo LangGraph — Fase 2.
+Nós do Grafo LangGraph — Fase 3.
 
-O que mudou em relação à Fase 1:
-- process_node agora chama o Claude via Bedrock
-- Adicionado system prompt temático sobre Copa do Mundo
-- Histórico de conversa enviado ao modelo (memória real)
-- Tratamento de erros de API (timeout, throttling)
+O que mudou em relação à Fase 2:
+- Adicionado rag_node: busca documentos relevantes antes de responder
+- process_node agora recebe contexto do RAG e o injeta no prompt
+- O prompt foi enriquecido para usar o contexto encontrado
 
-O que NÃO mudou:
-- input_node: idêntico à Fase 1
-- output_node: idêntico à Fase 1
-- error_node: idêntico à Fase 1
-- Assinatura das funções: (state) -> dict
-- Contrato com o GraphState: mesmo de sempre
-
-Isso demonstra na prática a separação de responsabilidades:
-mudamos o comportamento interno sem afetar a interface.
+Fluxo da Fase 3:
+  input_node → rag_node → process_node → output_node
+                  ↑
+          NOVO: busca no ChromaDB
 """
 
 import time
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-
 from app.graph.state import GraphState
 
 
-# ── System Prompt ──────────────────────────────────────────────────────────────
-# O system prompt é a "personalidade" e as "regras" do assistente.
-# É enviado ao modelo em TODA conversa, antes das mensagens do usuário.
-# Define escopo, tom, e comportamento esperado.
+# ── System Prompt Base ─────────────────────────────────────────────────────────
 WORLD_CUP_SYSTEM_PROMPT = """Você é um especialista em Copa do Mundo FIFA com conhecimento \
 profundo sobre toda a história do torneio desde 1930 até os dias atuais.
 
@@ -44,6 +34,7 @@ Diretrizes importantes:
   redirecione gentilmente ao tema principal
 - Para perguntas completamente fora do futebol, explique educadamente
   que seu escopo é a Copa do Mundo FIFA
+- Quando houver contexto de documentos fornecido, PRIORIZE essas informações
 
 Formato das respostas:
 - Respostas diretas e objetivas para perguntas simples
@@ -53,16 +44,13 @@ Formato das respostas:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# NÓ 1: Recepção — IDÊNTICO à Fase 1
+# NÓ 1: Input — IDÊNTICO à Fase 2
 # ─────────────────────────────────────────────────────────────────────────────
 
 def input_node(state: GraphState) -> dict:
-    """
-    Primeiro nó — recebe e prepara a entrada do usuário.
-    Sem alterações em relação à Fase 1.
-    """
+    """Recebe e prepara a entrada do usuário."""
     user_input = state["user_input"]
-    print(f"\n📥 [input_node] Recebendo pergunta: '{user_input}'")
+    print(f"\n📥 [input_node] Recebendo: '{user_input}'")
 
     return {
         "messages": [HumanMessage(content=user_input)],
@@ -78,71 +66,151 @@ def input_node(state: GraphState) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# NÓ 2: Processamento — SUBSTITUÍDO pelo Claude via Bedrock
+# NÓ 2: RAG — NOVO na Fase 3
+# ─────────────────────────────────────────────────────────────────────────────
+
+def rag_node(state: GraphState) -> dict:
+    """
+    Nó de RAG — busca documentos relevantes no ChromaDB.
+
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    COMO FUNCIONA:
+    1. Pega a pergunta do usuário (user_input)
+    2. Converte em embedding via Titan (chamada AWS)
+    3. ChromaDB compara com todos os chunks armazenados
+    4. Retorna os 3 chunks mais semanticamente similares
+    5. Salva esses chunks em state["retrieved_context"]
+    6. O process_node vai usar esse contexto no prompt
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    Args:
+        state: Estado com user_input preenchido.
+
+    Returns:
+        Dicionário com retrieved_context preenchido.
+    """
+    from app.tools.vector_store import search_similar_documents
+
+    user_input = state["user_input"]
+    print(f"🔍 [rag_node] Buscando documentos relevantes...")
+
+    try:
+        # Busca os 3 chunks mais relevantes para a pergunta
+        contexts = search_similar_documents(query=user_input, k=3)
+
+        if contexts:
+            print(f"   ✅ {len(contexts)} trechos encontrados no vector store")
+            for i, ctx in enumerate(contexts, 1):
+                preview = ctx[:80].replace('\n', ' ')
+                print(f"   {i}. {preview}...")
+        else:
+            print(f"   ⚠️  Nenhum trecho relevante encontrado")
+
+        # Atualiza metadados
+        metadata = state.get("metadata", {}) or {}
+        metadata["node_path"] = metadata.get("node_path", []) + ["rag_node"]
+        metadata["rag_chunks_found"] = len(contexts)
+
+        return {
+            "retrieved_context": contexts if contexts else [],
+            "metadata": metadata,
+        }
+
+    except FileNotFoundError as e:
+        # Vector store não foi criado ainda
+        print(f"   ⚠️  Vector store não encontrado: {e}")
+        print(f"   ℹ️  Respondendo sem RAG (só com conhecimento do modelo)")
+
+        metadata = state.get("metadata", {}) or {}
+        metadata["node_path"] = metadata.get("node_path", []) + ["rag_node"]
+        metadata["rag_chunks_found"] = 0
+
+        return {
+            "retrieved_context": [],
+            "metadata": metadata,
+        }
+
+    except Exception as e:
+        print(f"   ❌ Erro no RAG: {str(e)[:100]}")
+
+        metadata = state.get("metadata", {}) or {}
+        metadata["node_path"] = metadata.get("node_path", []) + ["rag_node"]
+
+        return {
+            "retrieved_context": [],
+            "metadata": metadata,
+        }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NÓ 3: Process — MODIFICADO para usar contexto do RAG
 # ─────────────────────────────────────────────────────────────────────────────
 
 def process_node(state: GraphState) -> dict:
     """
-    Nó de processamento — chama o Claude via Amazon Bedrock.
+    Nó de processamento — chama o LLM com contexto do RAG.
 
-    FASE 2: Substituímos o dicionário de keywords por uma
-    chamada real ao LLM. O modelo recebe:
-    1. System prompt com as regras e personalidade
-    2. Histórico completo da conversa (memória)
-    3. A pergunta atual do usuário
-
-    Tratamento de erros:
-    - Se a chamada falhar, registra o erro no estado
-    - O output_node detecta o erro e usa mensagem de fallback
-    - Nunca deixa o usuário sem resposta
+    Diferença da Fase 2:
+    Se o RAG encontrou documentos relevantes, injeta
+    esses trechos no prompt antes da pergunta.
+    O modelo passa a responder COM BASE nos documentos.
 
     Args:
-        state: Estado com messages (histórico) e user_input.
+        state: Estado com messages, user_input e retrieved_context.
 
     Returns:
-        Dicionário com final_response ou error preenchido.
+        Dicionário com final_response preenchido.
     """
-    # Importação local para evitar erro se as credenciais
-    # não estiverem configuradas durante os testes
     from app.config.aws_config import get_llm
 
-    print(f"⚙️  [process_node] Chamando Claude via Bedrock...")
+    print(f"⚙️  [process_node] Chamando LLM...")
 
     try:
-        # ── Monta as mensagens para enviar ao modelo ──────────────────────
-        #
-        # CONCEITO: Como o Claude "enxerga" a conversa
-        #
-        # O modelo recebe uma lista de mensagens nesta ordem:
-        # [SystemMessage, HumanMessage, AIMessage, HumanMessage, ...]
-        #
-        # SystemMessage  → as regras/personalidade (nosso WORLD_CUP_SYSTEM_PROMPT)
-        # HumanMessage   → mensagens do usuário
-        # AIMessage      → respostas anteriores do modelo
-        #
-        # Enviar o histórico completo é o que dá "memória" ao chatbot.
-        # Sem isso, cada pergunta seria tratada de forma isolada.
+        # ── Verifica se temos contexto do RAG ────────────────────────
+        retrieved_context = state.get("retrieved_context") or []
 
+        if retrieved_context:
+            # Monta o contexto formatado para injetar no prompt
+            context_text = "\n\n---\n\n".join(retrieved_context)
+
+            # Prompt enriquecido com o contexto dos documentos
+            # Este é o coração do RAG — o modelo "lê" os documentos
+            # antes de responder
+            rag_prompt = f"""{WORLD_CUP_SYSTEM_PROMPT}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONTEXTO DOS DOCUMENTOS (use como fonte principal):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{context_text}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Com base PRINCIPALMENTE nas informações acima, responda
+a pergunta do usuário. Se as informações não forem
+suficientes, complemente com seu conhecimento."""
+
+            system_content = rag_prompt
+            print(f"   📚 Usando RAG ({len(retrieved_context)} trechos injetados no prompt)")
+        else:
+            # Sem contexto — usa apenas o conhecimento do modelo
+            system_content = WORLD_CUP_SYSTEM_PROMPT
+            print(f"   🧠 Usando apenas conhecimento do modelo (sem RAG)")
+
+        # ── Monta e envia as mensagens ────────────────────────────────
         messages_to_send = [
-            SystemMessage(content=WORLD_CUP_SYSTEM_PROMPT),
-            # Histórico da conversa (acumulado pelo add_messages no state)
+            SystemMessage(content=system_content),
             *state["messages"],
         ]
 
-        # ── Chama o modelo ────────────────────────────────────────────────
         llm = get_llm()
         print(f"   🌐 Enviando {len(messages_to_send)} mensagens ao modelo...")
 
         response = llm.invoke(messages_to_send)
-
-        # response é um AIMessage com o campo .content
         answer = response.content
         print(f"   ✅ Resposta recebida ({len(answer)} caracteres)")
 
-        # Atualiza o caminho nos metadados
         metadata = state.get("metadata", {}) or {}
         metadata["node_path"] = metadata.get("node_path", []) + ["process_node"]
-        metadata["model_id"] = settings_info()
+        metadata["used_rag"] = len(retrieved_context) > 0
 
         return {
             "final_response": answer,
@@ -150,19 +218,8 @@ def process_node(state: GraphState) -> dict:
         }
 
     except Exception as e:
-        # ── Tratamento de erros ───────────────────────────────────────────
-        #
-        # Erros comuns do Bedrock:
-        # - ThrottlingException: muitas chamadas por segundo
-        # - ModelNotReadyException: modelo ainda inicializando
-        # - ValidationException: parâmetros inválidos
-        # - ConnectionError: problema de rede/credenciais
-        #
-        # Em vez de deixar o programa crashar, registramos o erro
-        # no estado para que o output_node possa tratá-lo.
-
         error_msg = str(e)
-        print(f"   ❌ Erro ao chamar Bedrock: {error_msg[:100]}")
+        print(f"   ❌ Erro: {error_msg[:100]}")
 
         metadata = state.get("metadata", {}) or {}
         metadata["node_path"] = metadata.get("node_path", []) + ["process_node"]
@@ -174,60 +231,40 @@ def process_node(state: GraphState) -> dict:
         }
 
 
-def settings_info() -> str:
-    """Retorna o model_id configurado para logging."""
-    try:
-        from app.config.settings import settings
-        return settings.bedrock_model_id
-    except Exception:
-        return "unknown"
-
-
 # ─────────────────────────────────────────────────────────────────────────────
-# NÓ 3: Saída — LEVEMENTE MODIFICADO para tratar erros
+# NÓ 4: Output — MODIFICADO para mostrar se usou RAG
 # ─────────────────────────────────────────────────────────────────────────────
 
 def output_node(state: GraphState) -> dict:
-    """
-    Último nó — finaliza a resposta.
-
-    Modificação em relação à Fase 1:
-    Verifica se houve erro no process_node e usa
-    mensagem de fallback adequada.
-    """
-    # Verifica se houve erro
+    """Finaliza a resposta e calcula métricas."""
     error = state.get("error")
+
     if error:
         print(f"⚠️  [output_node] Erro detectado, usando fallback")
-        # Identifica o tipo de erro para mensagem mais útil
         if "ThrottlingException" in error:
-            final_response = (
-                "Estou recebendo muitas perguntas no momento. "
-                "Aguarde alguns segundos e tente novamente."
-            )
+            final_response = "Estou recebendo muitas perguntas. Aguarde e tente novamente."
         elif "credentials" in error.lower() or "auth" in error.lower():
-            final_response = (
-                "Problema de autenticação com a AWS. "
-                "Verifique suas credenciais no arquivo .env."
-            )
+            final_response = "Problema de autenticação AWS. Verifique o .env."
         else:
-            final_response = (
-                "Desculpe, tive um problema ao processar sua pergunta. "
-                "Por favor, tente novamente."
-            )
+            final_response = "Desculpe, tive um problema. Por favor, tente novamente."
     else:
         final_response = state.get("final_response") or "Não consegui gerar uma resposta."
 
     print(f"📤 [output_node] Finalizando resposta")
 
-    # Calcula latência
     metadata = state.get("metadata", {}) or {}
     start_time = metadata.get("start_time", time.time())
     latency_ms = round((time.time() - start_time) * 1000, 2)
     metadata["node_path"] = metadata.get("node_path", []) + ["output_node"]
     metadata["latency_ms"] = latency_ms
 
-    print(f"⏱️  [output_node] Latência total: {latency_ms}ms")
+    # Indica se a resposta foi fundamentada em documentos
+    used_rag = metadata.get("used_rag", False)
+    rag_chunks = metadata.get("rag_chunks_found", 0)
+    rag_indicator = f"📚 RAG ({rag_chunks} trechos)" if used_rag else "🧠 Modelo"
+    metadata["source_indicator"] = rag_indicator
+
+    print(f"⏱️  [output_node] Latência: {latency_ms}ms | Fonte: {rag_indicator}")
 
     return {
         "messages": [AIMessage(content=final_response)],
@@ -237,20 +274,15 @@ def output_node(state: GraphState) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# NÓ DE ERRO — IDÊNTICO à Fase 1
+# NÓ DE ERRO — IDÊNTICO às fases anteriores
 # ─────────────────────────────────────────────────────────────────────────────
 
 def error_node(state: GraphState) -> dict:
-    """Tratamento centralizado de erros — sem alterações."""
+    """Tratamento centralizado de erros."""
     error = state.get("error", "Erro desconhecido")
-    print(f"❌ [error_node] Tratando erro: {error}")
-
-    fallback_response = (
-        "Desculpe, encontrei um problema ao processar sua pergunta. "
-        "Por favor, tente novamente."
-    )
-
+    print(f"❌ [error_node] Tratando: {error}")
+    fallback = "Desculpe, encontrei um problema. Por favor, tente novamente."
     return {
-        "final_response": fallback_response,
-        "messages": [AIMessage(content=fallback_response)],
+        "final_response": fallback,
+        "messages": [AIMessage(content=fallback)],
     }
