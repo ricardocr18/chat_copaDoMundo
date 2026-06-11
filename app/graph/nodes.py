@@ -27,7 +27,9 @@ Diretrizes:
 - Se não souber algo com certeza, diga claramente
 - Foque exclusivamente em Copa do Mundo
 - Quando houver contexto de documentos ou API, PRIORIZE essas informações
-- Máximo de 3 parágrafos"""
+- Máximo de 2 parágrafos curtos
+- Seja direto e conciso — respostas curtas são preferidas
+- Para listas, use no máximo 3 itens"""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
