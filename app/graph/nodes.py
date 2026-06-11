@@ -1,270 +1,446 @@
 """
-Nós do Grafo LangGraph — Fase 3.
+Nós do Grafo LangGraph — Fase 5.
 
-O que mudou em relação à Fase 2:
-- Adicionado rag_node: busca documentos relevantes antes de responder
-- process_node agora recebe contexto do RAG e o injeta no prompt
-- O prompt foi enriquecido para usar o contexto encontrado
-
-Fluxo da Fase 3:
-  input_node → rag_node → process_node → output_node
-                  ↑
-          NOVO: busca no ChromaDB
+Novidades em relação à Fase 4:
+- Guardrails de entrada no input_node
+- Guardrails de saída no output_node
+- LangFuse tracking em todos os nós
+- Scores de qualidade registrados automaticamente
 """
 
+import json
 import time
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from app.graph.state import GraphState
 
 
-# ── System Prompt Base ─────────────────────────────────────────────────────────
 WORLD_CUP_SYSTEM_PROMPT = """Você é um especialista em Copa do Mundo FIFA com conhecimento \
 profundo sobre toda a história do torneio desde 1930 até os dias atuais.
 
 Suas responsabilidades:
 - Responder perguntas sobre história, estatísticas e curiosidades da Copa do Mundo
 - Fornecer informações precisas sobre campeões, artilheiros, recordes e jogadores históricos
-- Contextualizar eventos históricos de forma didática e envolvente
 - Manter um tom entusiasmado mas preciso, como um comentarista esportivo experiente
 
-Diretrizes importantes:
+Diretrizes:
 - Responda SEMPRE em português brasileiro
 - Se não souber algo com certeza, diga claramente
-- Foque exclusivamente em Copa do Mundo — para outros assuntos de futebol,
-  redirecione gentilmente ao tema principal
-- Para perguntas completamente fora do futebol, explique educadamente
-  que seu escopo é a Copa do Mundo FIFA
-- Quando houver contexto de documentos fornecido, PRIORIZE essas informações
-
-Formato das respostas:
-- Respostas diretas e objetivas para perguntas simples
-- Respostas mais detalhadas para perguntas históricas ou comparativas
-- Use números e estatísticas quando relevante
-- Máximo de 3 parágrafos para não sobrecarregar o usuário"""
+- Foque exclusivamente em Copa do Mundo
+- Quando houver contexto de documentos ou API, PRIORIZE essas informações
+- Máximo de 3 parágrafos"""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# NÓ 1: Input — IDÊNTICO à Fase 2
+# NÓ 1: Input — MODIFICADO com Guardrail de Entrada + LangFuse
 # ─────────────────────────────────────────────────────────────────────────────
 
 def input_node(state: GraphState) -> dict:
-    """Recebe e prepara a entrada do usuário."""
+    """
+    Recebe a entrada e aplica guardrail de entrada.
+
+    Novidades Fase 5:
+    - Valida a pergunta antes de processar
+    - Inicia o trace no LangFuse
+    - Bloqueia conteúdo inadequado imediatamente
+    """
+    from app.guardrails.response_validator import run_input_guardrail
+    from app.observability.langfuse_client import get_tracker
+
     user_input = state["user_input"]
     print(f"\n📥 [input_node] Recebendo: '{user_input}'")
+
+    tracker = get_tracker()
+
+    # ── Inicia o trace no LangFuse ────────────────────────────────────
+    session_id = state.get("metadata", {}) and state["metadata"].get("session_id")
+    trace_id = tracker.start_trace(
+        user_input=user_input,
+        session_id=session_id,
+    )
+    tracker.start_span("input_node", input_data=user_input)
+
+    # ── Guardrail de Entrada ──────────────────────────────────────────
+    passed, block_reason = run_input_guardrail(user_input)
+
+    if not passed:
+        print(f"🛡️  [input_node] Guardrail bloqueou a entrada")
+
+        # Registra o bloqueio no LangFuse
+        tracker.log_score("guardrail_input", 0.0, comment=block_reason)
+        tracker.end_span("input_node", output=f"BLOQUEADO: {block_reason}")
+
+        # Resposta de bloqueio — não processa mais nada
+        block_response = f"⚠️ Não consigo processar esta solicitação. {block_reason}"
+        tracker.end_trace(output=block_response, intent="blocked")
+
+        return {
+            "messages": [HumanMessage(content=user_input)],
+            "final_response": block_response,
+            "error": "input_blocked",
+            "metadata": {
+                "start_time": time.time(),
+                "node_path": ["input_node"],
+                "trace_id": trace_id,
+                "guardrail_blocked": True,
+            },
+        }
+
+    # ── Entrada válida — continua o fluxo normal ──────────────────────
+    tracker.log_score("guardrail_input", 1.0, comment="Input válido")
+    tracker.end_span("input_node", output="valid")
 
     return {
         "messages": [HumanMessage(content=user_input)],
         "metadata": {
             "start_time": time.time(),
             "node_path": ["input_node"],
+            "trace_id": trace_id,
+            "guardrail_blocked": False,
         },
         "error": None,
         "final_response": None,
         "intent": None,
         "retrieved_context": None,
+        "api_data": None,
     }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# NÓ 2: RAG — NOVO na Fase 3
+# NÓ 2: Router — com LangFuse span
+# ─────────────────────────────────────────────────────────────────────────────
+
+def router_node(state: GraphState) -> dict:
+    """Router com rastreamento LangFuse."""
+    from app.agents.router_agent import router_node as _router
+    from app.observability.langfuse_client import get_tracker
+
+    # Se entrada foi bloqueada, pula o router
+    if state.get("error") == "input_blocked":
+        return {}
+
+    tracker = get_tracker()
+    tracker.start_span("router_node", input_data=state["user_input"])
+
+    result = _router(state)
+
+    tracker.end_span(
+        "router_node",
+        output=result.get("intent"),
+        metadata={
+            "confidence": result.get("metadata", {}).get("router_confidence"),
+            "reason": result.get("metadata", {}).get("router_reason"),
+        },
+    )
+    return result
+
+
+def routing_function(state: GraphState) -> str:
+    """Função de roteamento — pula se entrada bloqueada."""
+    if state.get("error") == "input_blocked":
+        return "off_topic"  # redireciona para nó que não chama LLM
+    from app.agents.router_agent import routing_function as _route
+    return _route(state)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NÓ 3: RAG — com LangFuse span
 # ─────────────────────────────────────────────────────────────────────────────
 
 def rag_node(state: GraphState) -> dict:
-    """
-    Nó de RAG — busca documentos relevantes no ChromaDB.
-
-    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    COMO FUNCIONA:
-    1. Pega a pergunta do usuário (user_input)
-    2. Converte em embedding via Titan (chamada AWS)
-    3. ChromaDB compara com todos os chunks armazenados
-    4. Retorna os 3 chunks mais semanticamente similares
-    5. Salva esses chunks em state["retrieved_context"]
-    6. O process_node vai usar esse contexto no prompt
-    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-    Args:
-        state: Estado com user_input preenchido.
-
-    Returns:
-        Dicionário com retrieved_context preenchido.
-    """
+    """Busca documentos com rastreamento LangFuse."""
     from app.tools.vector_store import search_similar_documents
+    from app.observability.langfuse_client import get_tracker
 
     user_input = state["user_input"]
     print(f"🔍 [rag_node] Buscando documentos relevantes...")
 
+    tracker = get_tracker()
+    tracker.start_span("rag_node", input_data=user_input)
+
     try:
-        # Busca os 3 chunks mais relevantes para a pergunta
         contexts = search_similar_documents(query=user_input, k=3)
 
         if contexts:
-            print(f"   ✅ {len(contexts)} trechos encontrados no vector store")
-            for i, ctx in enumerate(contexts, 1):
-                preview = ctx[:80].replace('\n', ' ')
-                print(f"   {i}. {preview}...")
+            print(f"   ✅ {len(contexts)} trechos encontrados")
         else:
-            print(f"   ⚠️  Nenhum trecho relevante encontrado")
+            print(f"   ⚠️  Nenhum trecho encontrado")
 
-        # Atualiza metadados
         metadata = state.get("metadata", {}) or {}
         metadata["node_path"] = metadata.get("node_path", []) + ["rag_node"]
         metadata["rag_chunks_found"] = len(contexts)
 
-        return {
-            "retrieved_context": contexts if contexts else [],
-            "metadata": metadata,
-        }
-
-    except FileNotFoundError as e:
-        # Vector store não foi criado ainda
-        print(f"   ⚠️  Vector store não encontrado: {e}")
-        print(f"   ℹ️  Respondendo sem RAG (só com conhecimento do modelo)")
-
-        metadata = state.get("metadata", {}) or {}
-        metadata["node_path"] = metadata.get("node_path", []) + ["rag_node"]
-        metadata["rag_chunks_found"] = 0
-
-        return {
-            "retrieved_context": [],
-            "metadata": metadata,
-        }
+        tracker.end_span("rag_node", output=f"{len(contexts)} chunks", metadata={"chunks": len(contexts)})
+        return {"retrieved_context": contexts or [], "metadata": metadata}
 
     except Exception as e:
-        print(f"   ❌ Erro no RAG: {str(e)[:100]}")
-
+        print(f"   ⚠️  Erro no RAG: {str(e)[:80]}")
         metadata = state.get("metadata", {}) or {}
         metadata["node_path"] = metadata.get("node_path", []) + ["rag_node"]
-
-        return {
-            "retrieved_context": [],
-            "metadata": metadata,
-        }
+        tracker.end_span("rag_node", output=f"error: {str(e)[:50]}")
+        return {"retrieved_context": [], "metadata": metadata}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# NÓ 3: Process — MODIFICADO para usar contexto do RAG
+# NÓ 4: API — com LangFuse span
+# ─────────────────────────────────────────────────────────────────────────────
+
+def api_node(state: GraphState) -> dict:
+    """Consulta API externa com rastreamento LangFuse."""
+    from app.tools.http_client import fetch_world_cup_standings, fetch_world_cup_news
+    from app.observability.langfuse_client import get_tracker
+
+    user_input = state["user_input"].lower()
+    print(f"🌐 [api_node] Consultando API externa...")
+
+    tracker = get_tracker()
+    tracker.start_span("api_node", input_data=user_input)
+
+    try:
+        if any(w in user_input for w in ["notícia", "noticia", "recente", "novo"]):
+            print(f"   📰 Buscando notícias...")
+            api_data = fetch_world_cup_news()
+        else:
+            print(f"   📊 Buscando classificação...")
+            api_data = fetch_world_cup_standings()
+
+        source = api_data.get("source", "unknown")
+        print(f"   ✅ Dados recebidos (fonte: {source})")
+
+        metadata = state.get("metadata", {}) or {}
+        metadata["node_path"] = metadata.get("node_path", []) + ["api_node"]
+        metadata["api_source"] = source
+
+        tracker.end_span("api_node", output=source, metadata={"source": source})
+        return {"api_data": api_data, "metadata": metadata}
+
+    except Exception as e:
+        print(f"   ❌ Erro na API: {str(e)[:80]}")
+        metadata = state.get("metadata", {}) or {}
+        metadata["node_path"] = metadata.get("node_path", []) + ["api_node"]
+        tracker.end_span("api_node", output=f"error: {str(e)[:50]}")
+        return {"api_data": {"source": "error", "error": str(e)}, "metadata": metadata}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NÓ 5: Direct — com LangFuse span
+# ─────────────────────────────────────────────────────────────────────────────
+
+def direct_node(state: GraphState) -> dict:
+    """Resposta direta com rastreamento."""
+    from app.observability.langfuse_client import get_tracker
+
+    print(f"💬 [direct_node] Resposta direta...")
+    tracker = get_tracker()
+    tracker.start_span("direct_node")
+    tracker.end_span("direct_node", output="direct_response")
+
+    metadata = state.get("metadata", {}) or {}
+    metadata["node_path"] = metadata.get("node_path", []) + ["direct_node"]
+    return {"metadata": metadata}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NÓ 6: Off-Topic — com LangFuse span
+# ─────────────────────────────────────────────────────────────────────────────
+
+def off_topic_node(state: GraphState) -> dict:
+    """Off-topic com rastreamento."""
+    from app.observability.langfuse_client import get_tracker
+
+    # Se foi bloqueado pelo guardrail, não exibe a mensagem de off-topic
+    if state.get("error") == "input_blocked":
+        metadata = state.get("metadata", {}) or {}
+        metadata["node_path"] = metadata.get("node_path", []) + ["off_topic_node"]
+        return {"metadata": metadata}
+
+    print(f"🚫 [off_topic_node] Pergunta fora do escopo")
+
+    tracker = get_tracker()
+    tracker.start_span("off_topic_node")
+    tracker.end_span("off_topic_node", output="off_topic_response")
+
+    off_topic_response = (
+        "Desculpe, sou especializado exclusivamente em Copa do Mundo FIFA! 🏆\n\n"
+        "Posso te ajudar com:\n"
+        "• História e campeões das Copas\n"
+        "• Artilheiros e estatísticas\n"
+        "• Curiosidades e recordes\n"
+        "• Informações sobre jogadores históricos\n\n"
+        "Tem alguma pergunta sobre a Copa do Mundo?"
+    )
+
+    metadata = state.get("metadata", {}) or {}
+    metadata["node_path"] = metadata.get("node_path", []) + ["off_topic_node"]
+
+    return {"final_response": off_topic_response, "metadata": metadata}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NÓ 7: Process — com LangFuse generation tracking
 # ─────────────────────────────────────────────────────────────────────────────
 
 def process_node(state: GraphState) -> dict:
-    """
-    Nó de processamento — chama o LLM com contexto do RAG.
-
-    Diferença da Fase 2:
-    Se o RAG encontrou documentos relevantes, injeta
-    esses trechos no prompt antes da pergunta.
-    O modelo passa a responder COM BASE nos documentos.
-
-    Args:
-        state: Estado com messages, user_input e retrieved_context.
-
-    Returns:
-        Dicionário com final_response preenchido.
-    """
+    """Processamento com rastreamento completo de geração LLM."""
     from app.config.aws_config import get_llm
+    from app.observability.langfuse_client import get_tracker
+
+    if state.get("final_response"):
+        print(f"⚙️  [process_node] Resposta já gerada, pulando LLM")
+        metadata = state.get("metadata", {}) or {}
+        metadata["node_path"] = metadata.get("node_path", []) + ["process_node"]
+        return {"metadata": metadata}
 
     print(f"⚙️  [process_node] Chamando LLM...")
+    intent = state.get("intent", "rag")
+    tracker = get_tracker()
+    tracker.start_span("process_node", input_data={"intent": intent})
 
     try:
-        # ── Verifica se temos contexto do RAG ────────────────────────
         retrieved_context = state.get("retrieved_context") or []
+        api_data = state.get("api_data")
 
-        if retrieved_context:
-            # Monta o contexto formatado para injetar no prompt
+        if retrieved_context and intent == "rag":
             context_text = "\n\n---\n\n".join(retrieved_context)
+            system_content = f"""{WORLD_CUP_SYSTEM_PROMPT}
 
-            # Prompt enriquecido com o contexto dos documentos
-            # Este é o coração do RAG — o modelo "lê" os documentos
-            # antes de responder
-            rag_prompt = f"""{WORLD_CUP_SYSTEM_PROMPT}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CONTEXTO DOS DOCUMENTOS (use como fonte principal):
+CONTEXTO DOS DOCUMENTOS:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 {context_text}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Responda baseado principalmente neste contexto."""
+            print(f"   📚 Modo RAG ({len(retrieved_context)} trechos)")
 
-Com base PRINCIPALMENTE nas informações acima, responda
-a pergunta do usuário. Se as informações não forem
-suficientes, complemente com seu conhecimento."""
+        elif api_data and intent == "api":
+            api_text = json.dumps(api_data, ensure_ascii=False, indent=2)
+            system_content = f"""{WORLD_CUP_SYSTEM_PROMPT}
 
-            system_content = rag_prompt
-            print(f"   📚 Usando RAG ({len(retrieved_context)} trechos injetados no prompt)")
+DADOS DA API EXTERNA:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{api_text}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Use estes dados para responder."""
+            print(f"   🌐 Modo API")
         else:
-            # Sem contexto — usa apenas o conhecimento do modelo
             system_content = WORLD_CUP_SYSTEM_PROMPT
-            print(f"   🧠 Usando apenas conhecimento do modelo (sem RAG)")
+            print(f"   💬 Modo Direct")
 
-        # ── Monta e envia as mensagens ────────────────────────────────
         messages_to_send = [
             SystemMessage(content=system_content),
             *state["messages"],
         ]
 
         llm = get_llm()
-        print(f"   🌐 Enviando {len(messages_to_send)} mensagens ao modelo...")
-
+        start_llm = time.time()
+        print(f"   🌐 Enviando {len(messages_to_send)} mensagens...")
         response = llm.invoke(messages_to_send)
+        llm_latency = round((time.time() - start_llm) * 1000, 2)
+
         answer = response.content
-        print(f"   ✅ Resposta recebida ({len(answer)} caracteres)")
+        print(f"   ✅ Resposta recebida ({len(answer)} chars)")
+
+        # Registra a chamada LLM no LangFuse
+        tracker.log_llm_call(
+            name="main_generation",
+            prompt=system_content[:500],
+            response=answer[:500],
+            latency_ms=llm_latency,
+        )
+        tracker.end_span("process_node", output=answer[:200])
 
         metadata = state.get("metadata", {}) or {}
         metadata["node_path"] = metadata.get("node_path", []) + ["process_node"]
-        metadata["used_rag"] = len(retrieved_context) > 0
+        metadata["used_rag"] = bool(retrieved_context and intent == "rag")
+        metadata["used_api"] = bool(api_data and intent == "api")
+        metadata["llm_latency_ms"] = llm_latency
 
-        return {
-            "final_response": answer,
-            "metadata": metadata,
-        }
+        return {"final_response": answer, "metadata": metadata}
 
     except Exception as e:
         error_msg = str(e)
-        print(f"   ❌ Erro: {error_msg[:100]}")
-
+        print(f"   ❌ Erro: {error_msg[:80]}")
+        tracker.end_span("process_node", output=f"error: {error_msg[:50]}")
         metadata = state.get("metadata", {}) or {}
         metadata["node_path"] = metadata.get("node_path", []) + ["process_node"]
-
-        return {
-            "error": error_msg,
-            "final_response": None,
-            "metadata": metadata,
-        }
+        return {"error": error_msg, "final_response": None, "metadata": metadata}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# NÓ 4: Output — MODIFICADO para mostrar se usou RAG
+# NÓ 8: Output — MODIFICADO com Guardrail de Saída + finaliza LangFuse
 # ─────────────────────────────────────────────────────────────────────────────
 
 def output_node(state: GraphState) -> dict:
-    """Finaliza a resposta e calcula métricas."""
-    error = state.get("error")
+    """
+    Finaliza com guardrail de saída e fecha o trace LangFuse.
 
-    if error:
+    Novidades Fase 5:
+    - Valida a resposta antes de entregar
+    - Registra score de qualidade no LangFuse
+    - Fecha o trace com todas as métricas
+    """
+    from app.guardrails.response_validator import run_output_guardrail
+    from app.observability.langfuse_client import get_tracker
+
+    error = state.get("error")
+    intent = state.get("intent", "rag")
+    tracker = get_tracker()
+    tracker.start_span("output_node")
+
+    if error and error != "input_blocked":
         print(f"⚠️  [output_node] Erro detectado, usando fallback")
-        if "ThrottlingException" in error:
-            final_response = "Estou recebendo muitas perguntas. Aguarde e tente novamente."
-        elif "credentials" in error.lower() or "auth" in error.lower():
-            final_response = "Problema de autenticação AWS. Verifique o .env."
-        else:
-            final_response = "Desculpe, tive um problema. Por favor, tente novamente."
+        final_response = "Desculpe, tive um problema. Por favor, tente novamente."
     else:
         final_response = state.get("final_response") or "Não consegui gerar uma resposta."
 
-    print(f"📤 [output_node] Finalizando resposta")
+    # ── Guardrail de Saída ────────────────────────────────────────────
+    if error != "input_blocked":
+        passed, final_response, guard_reason = run_output_guardrail(
+            final_response, intent
+        )
 
+        if not passed:
+            print(f"🛡️  [output_node] Guardrail de saída bloqueou resposta")
+            final_response = (
+                "Desculpe, não consegui gerar uma resposta adequada. "
+                "Por favor, reformule sua pergunta."
+            )
+            tracker.log_score("guardrail_output", 0.0, comment=guard_reason)
+        else:
+            tracker.log_score("guardrail_output", 1.0, comment="Output válido")
+
+    print(f"📤 [output_node] Finalizando")
+
+    # ── Métricas finais ───────────────────────────────────────────────
     metadata = state.get("metadata", {}) or {}
     start_time = metadata.get("start_time", time.time())
     latency_ms = round((time.time() - start_time) * 1000, 2)
     metadata["node_path"] = metadata.get("node_path", []) + ["output_node"]
     metadata["latency_ms"] = latency_ms
 
-    # Indica se a resposta foi fundamentada em documentos
-    used_rag = metadata.get("used_rag", False)
-    rag_chunks = metadata.get("rag_chunks_found", 0)
-    rag_indicator = f"📚 RAG ({rag_chunks} trechos)" if used_rag else "🧠 Modelo"
-    metadata["source_indicator"] = rag_indicator
+    intent_display = metadata.get("intent", intent)
+    source_map = {
+        "rag":       f"📚 RAG ({metadata.get('rag_chunks_found', 0)} trechos)",
+        "api":       f"🌐 API ({metadata.get('api_source', 'externa')})",
+        "direct":    "💬 Direto",
+        "off_topic": "🚫 Off-topic",
+        "blocked":   "🛡️ Bloqueado",
+    }
+    source_indicator = source_map.get(intent_display, "🧠 Modelo")
+    metadata["source_indicator"] = source_indicator
 
-    print(f"⏱️  [output_node] Latência: {latency_ms}ms | Fonte: {rag_indicator}")
+    print(f"⏱️  Latência: {latency_ms}ms | Rota: {source_indicator}")
+
+    # ── Fecha o trace no LangFuse ─────────────────────────────────────
+    tracker.end_span("output_node", output=final_response[:200])
+    tracker.log_score(
+        "total_latency_ok",
+        1.0 if latency_ms < 15000 else 0.5,
+        comment=f"Latência: {latency_ms}ms",
+    )
+    tracker.end_trace(
+        output=final_response,
+        intent=intent_display,
+        latency_ms=latency_ms,
+    )
 
     return {
         "messages": [AIMessage(content=final_response)],
@@ -273,16 +449,7 @@ def output_node(state: GraphState) -> dict:
     }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# NÓ DE ERRO — IDÊNTICO às fases anteriores
-# ─────────────────────────────────────────────────────────────────────────────
-
 def error_node(state: GraphState) -> dict:
     """Tratamento centralizado de erros."""
-    error = state.get("error", "Erro desconhecido")
-    print(f"❌ [error_node] Tratando: {error}")
     fallback = "Desculpe, encontrei um problema. Por favor, tente novamente."
-    return {
-        "final_response": fallback,
-        "messages": [AIMessage(content=fallback)],
-    }
+    return {"final_response": fallback, "messages": [AIMessage(content=fallback)]}

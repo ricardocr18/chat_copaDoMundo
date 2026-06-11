@@ -1,11 +1,9 @@
 """
-Configurações centralizadas da aplicação.
+Configurações centralizadas da aplicação — Fase 4.
 
-Por que Pydantic Settings?
-- Lê variáveis de ambiente automaticamente
-- Valida os tipos (se AWS_REGION não for string, já falha na inicialização)
-- Documenta quais configs existem em um só lugar
-- Suporta arquivos .env nativamente
+Novidades:
+- Adicionadas chaves para APIs externas (RapidAPI, NewsAPI)
+- Campos opcionais: se não configurados, o sistema usa mocks
 """
 
 from pydantic import Field
@@ -13,61 +11,60 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """
-    Todas as configurações da aplicação.
-    
-    Pydantic lê automaticamente do ambiente ou do arquivo .env.
-    Campos com default=None são opcionais (usados em fases futuras).
-    """
-
     model_config = SettingsConfigDict(
-        env_file=".env",          # Lê o arquivo .env na raiz do projeto
+        env_file=".env",
         env_file_encoding="utf-8",
-        case_sensitive=False,     # AWS_REGION == aws_region
-        extra="ignore",           # Ignora variáveis de ambiente desconhecidas
+        case_sensitive=False,
+        extra="ignore",
     )
 
-    # ── Aplicação ─────────────────────────────────────────────────────────
-    app_name: str = Field(default="world-cup-agent", description="Nome da aplicação")
-    app_env: str = Field(default="development", description="Ambiente: development | production")
-    log_level: str = Field(default="DEBUG", description="Nível de log")
+    # ── Aplicação ──────────────────────────────────────────────────────
+    app_name: str = Field(default="world-cup-agent")
+    app_env: str = Field(default="development")
+    log_level: str = Field(default="DEBUG")
 
-    # ── AWS / Bedrock ──────────────────────────────────────────────────────
-    aws_region: str = Field(default="us-east-1", description="Região AWS")
-    aws_access_key_id: str | None = Field(default=None, description="AWS Access Key")
-    aws_secret_access_key: str | None = Field(default=None, description="AWS Secret Key")
+    # ── AWS / Bedrock ──────────────────────────────────────────────────
+    aws_region: str = Field(default="us-east-1")
+    aws_access_key_id: str | None = Field(default=None)
+    aws_secret_access_key: str | None = Field(default=None)
+    bedrock_model_id: str = Field(default="us.meta.llama3-3-70b-instruct-v1:0")
+    bedrock_embeddings_model_id: str = Field(default="amazon.titan-embed-text-v2:0")
 
-    bedrock_model_id: str = Field(
-        default="meta.llama3-3-70b-instruct-v1:0",
-        description="ID do modelo no Bedrock",
-    )
-    bedrock_embeddings_model_id: str = Field(
-        default="amazon.titan-embed-text-v2:0",
-        description="ID do modelo de embeddings no Bedrock",
-    )
-
-    # ── LangFuse ───────────────────────────────────────────────────────────
+    # ── LangFuse ───────────────────────────────────────────────────────
     langfuse_public_key: str | None = Field(default=None)
     langfuse_secret_key: str | None = Field(default=None)
     langfuse_host: str = Field(default="https://cloud.langfuse.com")
 
-    # ── Vector Store ───────────────────────────────────────────────────────
-    chroma_persist_dir: str = Field(
-        default="./app/data/processed/chroma_db",
-        description="Diretório onde o ChromaDB persiste os dados",
+    # ── Vector Store ───────────────────────────────────────────────────
+    chroma_persist_dir: str = Field(default="./app/data/processed/chroma_db")
+
+    # ── APIs Externas (Fase 4) ─────────────────────────────────────────
+    # RapidAPI — acesso ao api-football.com
+    # Cadastro gratuito em: https://rapidapi.com/api-sports/api/api-football
+    rapidapi_key: str | None = Field(
+        default=None,
+        description="Chave da RapidAPI para dados de futebol em tempo real",
+    )
+
+    # NewsAPI — notícias em tempo real
+    # Cadastro gratuito em: https://newsapi.org
+    news_api_key: str | None = Field(
+        default=None,
+        description="Chave da NewsAPI para notícias recentes",
     )
 
     @property
     def is_production(self) -> bool:
-        """Atalho para verificar se estamos em produção."""
         return self.app_env == "production"
 
     @property
     def langfuse_enabled(self) -> bool:
-        """LangFuse só é ativado se as chaves estiverem configuradas."""
         return bool(self.langfuse_public_key and self.langfuse_secret_key)
 
+    @property
+    def has_external_api(self) -> bool:
+        """Verifica se alguma API externa está configurada."""
+        return bool(self.rapidapi_key or self.news_api_key)
 
-# Instância única (Singleton) — importada por todos os módulos
-# Uso: from app.config.settings import settings
+
 settings = Settings()
