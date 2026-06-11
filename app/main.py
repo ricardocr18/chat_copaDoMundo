@@ -1,16 +1,23 @@
-"""Ponto de entrada — Fase 4: Multi-agentes com roteamento."""
+"""
+Ponto de entrada — Fase 6.
+Suporta modo CLI (terminal) e modo API (FastAPI).
+
+Uso:
+  CLI:  poetry run python -m app.main
+  API:  poetry run uvicorn api.app:app --reload --port 8000
+"""
 
 from app.graph.builder import get_graph
 from app.graph.state import GraphState
 
 
 def run_chat() -> None:
+    """Loop do chatbot em modo CLI."""
     print("=" * 60)
     print("🏆  BEM-VINDO AO CHATBOT DA COPA DO MUNDO  🏆")
     print("=" * 60)
-    print("Fase 4 — Multi-agentes com Router inteligente")
-    print("Rotas disponíveis: 📚 RAG | 🌐 API | 💬 Direto | 🚫 Off-topic")
-    print("Digite 'sair' para encerrar | 'estado' para histórico")
+    print("Fase 6 — API REST disponível em http://localhost:8000")
+    print("CLI ativo | Digite 'sair' para encerrar")
     print("-" * 60)
 
     graph = get_graph()
@@ -31,7 +38,7 @@ def run_chat() -> None:
             if not user_input:
                 continue
             if user_input.lower() in ("sair", "exit"):
-                print("\n👋 Até logo! Que venha a próxima Copa! 🏆")
+                print("\n👋 Até logo! 🏆")
                 break
             if user_input.lower() == "estado":
                 _print_state(current_state)
@@ -71,13 +78,10 @@ def _print_state(state: GraphState) -> None:
     print("📋 ESTADO ATUAL")
     print("=" * 45)
     print(f"• Mensagens: {len(state.get('messages', []))}")
-    print(f"• Intent atual: {state.get('intent', 'N/A')}")
-    ctx = state.get("retrieved_context")
-    print(f"• Chunks RAG: {len(ctx) if ctx else 0}")
-    print(f"• API data: {'Sim' if state.get('api_data') else 'Não'}")
+    print(f"• Intent: {state.get('intent', 'N/A')}")
     messages = state.get("messages", [])
     if messages:
-        print("\n📜 Últimas mensagens:")
+        print("\n📜 Histórico:")
         for i, msg in enumerate(messages[-4:], 1):
             role = "👤" if msg.type == "human" else "🤖"
             content = msg.content[:70] + "..." if len(msg.content) > 70 else msg.content
