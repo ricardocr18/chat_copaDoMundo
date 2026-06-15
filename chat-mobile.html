@@ -6,7 +6,6 @@
 <title>Copa do Mundo Chat</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
-
   body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     background: #1a1a2e;
@@ -15,7 +14,6 @@
     flex-direction: column;
     overflow: hidden;
   }
-
   .header {
     background: #16213e;
     padding: 12px 16px;
@@ -25,7 +23,6 @@
     border-bottom: 1px solid rgba(255,255,255,0.1);
     flex-shrink: 0;
   }
-
   .header-icon {
     width: 40px; height: 40px;
     background: linear-gradient(135deg, #f7971e, #ffd200);
@@ -33,63 +30,18 @@
     display: flex; align-items: center; justify-content: center;
     font-size: 20px; flex-shrink: 0;
   }
-
-  .header-info h1 {
-    font-size: 15px; font-weight: 600;
-    color: #fff;
-  }
-
+  .header-info h1 { font-size: 15px; font-weight: 600; color: #fff; }
   .header-info p {
     font-size: 12px; color: #4caf50;
     display: flex; align-items: center; gap: 4px;
   }
-
   .status-dot {
     width: 6px; height: 6px;
     background: #4caf50;
     border-radius: 50%;
     animation: pulse 2s infinite;
   }
-
-  @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.4; }
-  }
-
-  .api-config {
-    background: #0f3460;
-    padding: 8px 16px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-shrink: 0;
-  }
-
-  .api-config input {
-    flex: 1;
-    background: rgba(255,255,255,0.1);
-    border: 1px solid rgba(255,255,255,0.2);
-    border-radius: 8px;
-    padding: 6px 10px;
-    color: #fff;
-    font-size: 12px;
-    outline: none;
-  }
-
-  .api-config input::placeholder { color: rgba(255,255,255,0.5); }
-
-  .api-config button {
-    background: #f7971e;
-    border: none;
-    border-radius: 8px;
-    padding: 6px 12px;
-    color: #fff;
-    font-size: 12px;
-    font-weight: 600;
-    cursor: pointer;
-    white-space: nowrap;
-  }
-
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
   .messages {
     flex: 1;
     overflow-y: auto;
@@ -99,26 +51,15 @@
     gap: 12px;
     scroll-behavior: smooth;
   }
-
   .message {
     display: flex;
     gap: 8px;
     max-width: 85%;
     animation: fadeIn 0.3s ease;
   }
-
-  @keyframes fadeIn {
-    from { opacity: 0; transform: translateY(8px); }
-    to   { opacity: 1; transform: translateY(0); }
-  }
-
-  .message.user {
-    align-self: flex-end;
-    flex-direction: row-reverse;
-  }
-
-  .message.bot { align-self: flex-start; }
-
+  @keyframes fadeIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
+  .message.user { align-self: flex-end; flex-direction: row-reverse; }
+  .message.bot  { align-self: flex-start; }
   .avatar {
     width: 32px; height: 32px;
     border-radius: 50%;
@@ -126,10 +67,8 @@
     font-size: 14px; flex-shrink: 0;
     margin-top: 2px;
   }
-
-  .bot .avatar { background: linear-gradient(135deg, #f7971e, #ffd200); }
+  .bot  .avatar { background: linear-gradient(135deg, #f7971e, #ffd200); }
   .user .avatar { background: #0f3460; color: #fff; font-size: 12px; font-weight: 600; }
-
   .bubble {
     padding: 10px 14px;
     border-radius: 18px;
@@ -137,50 +76,33 @@
     line-height: 1.5;
     word-break: break-word;
   }
-
   .bot .bubble {
     background: #16213e;
     color: #e0e0e0;
     border-bottom-left-radius: 4px;
     border: 1px solid rgba(255,255,255,0.08);
   }
-
   .user .bubble {
     background: linear-gradient(135deg, #f7971e, #ffd200);
     color: #1a1a2e;
     font-weight: 500;
     border-bottom-right-radius: 4px;
   }
-
-  .meta {
-    font-size: 10px;
-    color: rgba(255,255,255,0.3);
-    margin-top: 4px;
-    padding: 0 4px;
-  }
-
+  .meta { font-size: 10px; color: rgba(255,255,255,0.3); margin-top: 4px; padding: 0 4px; }
   .user .meta { text-align: right; }
-
   .typing {
     display: flex; align-items: center; gap: 4px;
     padding: 12px 16px;
   }
-
   .typing span {
     width: 8px; height: 8px;
     background: #f7971e;
     border-radius: 50%;
     animation: bounce 1.2s infinite;
   }
-
-  .typing span:nth-child(2) { animation-delay: 0.2s; }
-  .typing span:nth-child(3) { animation-delay: 0.4s; }
-
-  @keyframes bounce {
-    0%, 60%, 100% { transform: translateY(0); }
-    30% { transform: translateY(-8px); }
-  }
-
+  .typing span:nth-child(2) { animation-delay: .2s; }
+  .typing span:nth-child(3) { animation-delay: .4s; }
+  @keyframes bounce { 0%,60%,100%{transform:translateY(0)} 30%{transform:translateY(-8px)} }
   .suggestions {
     padding: 0 16px 8px;
     display: flex;
@@ -189,12 +111,10 @@
     flex-shrink: 0;
     scrollbar-width: none;
   }
-
   .suggestions::-webkit-scrollbar { display: none; }
-
   .suggestion {
-    background: rgba(247, 151, 30, 0.15);
-    border: 1px solid rgba(247, 151, 30, 0.4);
+    background: rgba(247,151,30,.15);
+    border: 1px solid rgba(247,151,30,.4);
     border-radius: 20px;
     padding: 6px 14px;
     color: #ffd200;
@@ -203,7 +123,6 @@
     cursor: pointer;
     flex-shrink: 0;
   }
-
   .input-area {
     background: #16213e;
     padding: 10px 12px;
@@ -213,11 +132,10 @@
     border-top: 1px solid rgba(255,255,255,0.1);
     flex-shrink: 0;
   }
-
   .input-area textarea {
     flex: 1;
-    background: rgba(255,255,255,0.08);
-    border: 1px solid rgba(255,255,255,0.15);
+    background: rgba(255,255,255,.08);
+    border: 1px solid rgba(255,255,255,.15);
     border-radius: 20px;
     padding: 10px 16px;
     color: #fff;
@@ -229,9 +147,7 @@
     line-height: 1.4;
     font-family: inherit;
   }
-
-  .input-area textarea::placeholder { color: rgba(255,255,255,0.4); }
-
+  .input-area textarea::placeholder { color: rgba(255,255,255,.4); }
   .send-btn {
     width: 40px; height: 40px;
     background: linear-gradient(135deg, #f7971e, #ffd200);
@@ -242,29 +158,16 @@
     flex-shrink: 0;
     font-size: 18px;
   }
-
-  .send-btn:disabled { opacity: 0.4; }
-
+  .send-btn:disabled { opacity: .4; }
   .error-bubble {
-    background: rgba(220, 53, 69, 0.2);
-    border: 1px solid rgba(220, 53, 69, 0.4);
+    background: rgba(220,53,69,.2);
+    border: 1px solid rgba(220,53,69,.4);
     color: #ff6b6b;
     padding: 8px 12px;
     border-radius: 12px;
     font-size: 13px;
     text-align: center;
     margin: 0 16px;
-  }
-
-  .route-badge {
-    display: inline-block;
-    background: rgba(247, 151, 30, 0.2);
-    border: 1px solid rgba(247, 151, 30, 0.3);
-    color: #ffd200;
-    font-size: 10px;
-    padding: 2px 8px;
-    border-radius: 10px;
-    margin-top: 6px;
   }
 </style>
 </head>
@@ -276,11 +179,6 @@
     <h1>Copa do Mundo Agent</h1>
     <p><span class="status-dot"></span> <span id="status-text">Conectando...</span></p>
   </div>
-</div>
-
-<div class="api-config">
-  <input type="text" id="api-url" placeholder="IP da API: 52.23.187.220:8000" value="http://52.23.187.220:8000">
-  <button onclick="testConnection()">Testar</button>
 </div>
 
 <div class="messages" id="messages">
@@ -296,7 +194,7 @@
   </div>
 </div>
 
-<div class="suggestions" id="suggestions">
+<div class="suggestions">
   <div class="suggestion" onclick="sendSuggestion(this)">🇧🇷 Títulos do Brasil</div>
   <div class="suggestion" onclick="sendSuggestion(this)">⚽ Maior artilheiro</div>
   <div class="suggestion" onclick="sendSuggestion(this)">🏅 Copa 1970</div>
@@ -311,15 +209,20 @@
 </div>
 
 <script>
-  const API_BASE = () => document.getElementById('api-url').value.trim().replace(/\/$/, '');
-  const SESSION_ID = 'mobile-' + Math.random().toString(36).substr(2, 8);
+  // ── URL da API detectada automaticamente da origem da página ──────────────
+  // Quando acessado via http://IP:8000/chat, usa a mesma origem
+  const API_BASE = window.location.origin;
+
+  const SESSION_ID = 'session-' + Math.random().toString(36).substr(2, 8);
   let isLoading = false;
 
-  async function testConnection() {
+  // Verifica conexão automaticamente ao carregar a página
+  async function checkConnection() {
     const statusEl = document.getElementById('status-text');
-    statusEl.textContent = 'Verificando...';
     try {
-      const res = await fetch(API_BASE() + '/api/v1/health', { signal: AbortSignal.timeout(5000) });
+      const res = await fetch(API_BASE + '/api/v1/health', {
+        signal: AbortSignal.timeout(5000)
+      });
       if (res.ok) {
         statusEl.textContent = 'Online ✓';
         statusEl.style.color = '#4caf50';
@@ -352,25 +255,22 @@
   }
 
   function formatTime() {
-    return new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    return new Date().toLocaleTimeString('pt-BR', {hour:'2-digit', minute:'2-digit'});
   }
 
-  function addMessage(text, role, meta = '') {
+  function addMessage(text, role, meta='') {
     const msgs = document.getElementById('messages');
     const div = document.createElement('div');
     div.className = 'message ' + role;
-
-    const avatarContent = role === 'bot' ? '🏆' : 'EU';
+    const avatar = role === 'bot' ? '🏆' : 'EU';
     div.innerHTML = `
-      <div class="avatar">${avatarContent}</div>
+      <div class="avatar">${avatar}</div>
       <div>
-        <div class="bubble">${text.replace(/\n/g, '<br>')}</div>
-        <div class="meta">${formatTime()}${meta ? ' · ' + meta : ''}</div>
+        <div class="bubble">${text.replace(/\n/g,'<br>')}</div>
+        <div class="meta">${formatTime()}${meta ? ' · '+meta : ''}</div>
       </div>`;
-
     msgs.appendChild(div);
     msgs.scrollTop = msgs.scrollHeight;
-    return div;
   }
 
   function addTyping() {
@@ -407,23 +307,21 @@
     addTyping();
 
     try {
-      const res = await fetch(API_BASE() + '/api/v1/chat', {
+      const res = await fetch(API_BASE + '/api/v1/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, session_id: SESSION_ID }),
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({message: text, session_id: SESSION_ID}),
         signal: AbortSignal.timeout(30000),
       });
 
       removeTyping();
-
       if (!res.ok) throw new Error('HTTP ' + res.status);
 
       const data = await res.json();
-      const routeMap = { rag: '📚 RAG', api: '🌐 API', direct: '💬 Direto', off_topic: '🚫 Off-topic' };
-      const routeLabel = routeMap[data.intent] || '';
-      const latency = data.latency_ms ? Math.round(data.latency_ms / 1000) + 's' : '';
-
-      addMessage(data.response, 'bot', [routeLabel, latency].filter(Boolean).join(' · '));
+      const routeMap = {rag:'📚 RAG', api:'🌐 API', direct:'💬 Direto', off_topic:'🚫 Off-topic'};
+      const route = routeMap[data.intent] || '';
+      const latency = data.latency_ms ? Math.round(data.latency_ms/1000)+'s' : '';
+      addMessage(data.response, 'bot', [route, latency].filter(Boolean).join(' · '));
 
     } catch (err) {
       removeTyping();
@@ -431,8 +329,8 @@
       const errDiv = document.createElement('div');
       errDiv.className = 'error-bubble';
       errDiv.textContent = err.message.includes('timeout')
-        ? 'Tempo esgotado. A API pode estar inicializando, tente novamente.'
-        : 'Erro ao conectar. Verifique o IP da API.';
+        ? 'Tempo esgotado. Tente novamente.'
+        : 'Erro ao conectar com a API.';
       msgs.appendChild(errDiv);
       msgs.scrollTop = msgs.scrollHeight;
     }
@@ -442,7 +340,7 @@
     document.getElementById('msg-input').focus();
   }
 
-  testConnection();
+  checkConnection();
 </script>
 </body>
 </html>
