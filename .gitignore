@@ -58,3 +58,8 @@ logs/
 zGeral/
 *zGeral/
 
+# Arquivos de Test "funcionalidades"
+test_gemini.py
+test_gemini2.py
+test_langfuse.py
+test_models.py
